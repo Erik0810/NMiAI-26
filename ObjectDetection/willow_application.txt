@@ -1,0 +1,43 @@
+Application for Google Willow Program Access
+Norwegian AI Championships (NM i AI) – March 2026
+
+---
+
+Applicant Information
+
+Name: Erik Øverby
+GCP Account Email: devstar7641@gcplab.me
+GCP Project ID: ainm26osl-764
+Institution: University of Oslo, Department of Informatics
+Degree: Master's in Programming and Systems Architecture
+Competition: NM i AI (Norwegian AI Championships) – Grocery Object Detection Challenge
+
+---
+
+Application
+
+I am writing to apply for access to Google's Willow program in connection with my participation in the Norwegian AI Championships (NM i AI). I am currently a master's student at the University of Oslo's Department of Informatics, specializing in Programming and Systems Architecture.
+
+My thesis work focuses on Mixed Integer Linear Programming (MILP) solvers applied to optimization problems within the Norwegian railway infrastructure — specifically in collaboration with Bane NOR, the state enterprise responsible for the national rail network. This work has given me a solid background in large-scale computational problem solving and a genuine interest in leveraging modern hardware accelerators for computationally intensive tasks.
+
+As part of NM i AI, I am competing in a grocery object detection challenge that requires training high-capacity deep learning models on a custom annotated retail dataset. I am currently working with YOLOv8x — one of the largest variants of the YOLO detection architecture — at an input resolution of 1536×1536 pixels. The dataset consists of approximately 250 images with over 22,000 bounding box annotations spanning 356 product categories. Training a model of this scale to convergence is highly GPU-intensive and requires significant VRAM (the YOLOv8x model alone occupies close to 20 GB during training at this resolution with a batch size of 2).
+
+I have already been granted a GCP account with unlimited compute credits for the duration of this competition, and I am currently using a g2-standard-16 instance equipped with an NVIDIA L4 GPU (24 GB VRAM) in the europe-west1-c zone. While this setup has allowed me to train competitive models — achieving a leaderboard score of 0.9095 out of a maximum of approximately 0.93 for the current top entry — access to Willow's next-generation quantum-inspired or accelerated compute resources would allow me to explore more advanced training strategies that are currently bottlenecked by hardware.
+
+Specifically, I am looking to:
+
+1. Train a k-fold ensemble (3 folds) of YOLOv8x models simultaneously rather than sequentially, reducing total training time from approximately 15 hours to 5 hours.
+2. Experiment with larger batch sizes and higher input resolutions (up to 2048 px) that are currently infeasible on a single L4 GPU.
+3. Run extended hyperparameter search over augmentation strategies, confidence thresholds, and Weighted Boxes Fusion parameters that are too expensive to sweep on current hardware.
+
+Beyond the competition, I believe exposure to Willow's capabilities would directly inform my thesis research, where I am exploring hybrid classical-quantum approaches to MILP relaxations for Bane NOR's train scheduling and track allocation problems. These are NP-hard combinatorial optimization problems that share structural properties with large-scale constrained inference tasks in machine learning.
+
+I am happy to provide any additional documentation, including university enrollment confirmation, competition registration details, or a brief technical summary of my current model architecture and results.
+
+Thank you for considering my application.
+
+Sincerely,
+Erik Øverby.
+Master's Student, Programming and Systems Architecture
+Department of Informatics, University of Oslo
+NM i AI 2026 Competitor

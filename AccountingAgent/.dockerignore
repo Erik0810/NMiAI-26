@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+.env.example
+.venv/
+DOCS/
+.git/
+.gcloudignore
+.dockerignore
+*.md
+deploy.ps1
+deploy.sh
+test_local.py

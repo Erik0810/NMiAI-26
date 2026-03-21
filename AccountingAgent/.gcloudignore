@@ -1,0 +1,13 @@
+DOCS/
+.git/
+__pycache__/
+*.pyc
+.env
+.venv/
+chrome_debug_profile/
+*.json
+analyze_*.py
+extract_*.py
+check_scores.py
+submit_batch.py
+failure_details.txt

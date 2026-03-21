@@ -1,0 +1,69 @@
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environments ──────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Secrets & credentials ─────────────────────────────────────────────
+.env
+token.txt
+AccountingAgent/token.txt
+AstarIsland/config.py
+**/service_account*.json
+**/credentials*.json
+
+# ── Large model files ─────────────────────────────────────────────────
+*.pt
+*.onnx
+*.npy
+*.npz
+*.pkl
+*.h5
+
+# ── Datasets & images ─────────────────────────────────────────────────
+ObjectDetection/dataset/
+ObjectDetection/dataset_yolo/
+ObjectDetection/product_images/
+ObjectDetection/runs/
+*.zip
+
+# ── Submission artifacts ──────────────────────────────────────────────
+ObjectDetection/submission_v*/
+ObjectDetection/test5/
+ObjectDetection/viz_output/
+
+# ── Accounting agent logs & run outputs ───────────────────────────────
+AccountingAgent/*.log
+AccountingAgent/all_logs.*
+AccountingAgent/bank_recon_logs.*
+AccountingAgent/employee_onboard_logs.*
+AccountingAgent/reminder_fee_logs.*
+AccountingAgent/failures_output.txt
+AccountingAgent/failure_details.txt
+AccountingAgent/latest_*.txt
+AccountingAgent/latest_*.json
+AccountingAgent/logs_*.json
+AccountingAgent/rev*.json
+AccountingAgent/rev*.txt
+
+# ── Chrome debug profile (Selenium/CDP testing) ───────────────────────
+AccountingAgent/chrome_debug_profile/
+
+# ── AstarIsland round data (large observation dumps) ──────────────────
+AstarIsland/round_data/
+
+# ── OS & editor ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+*.swo
