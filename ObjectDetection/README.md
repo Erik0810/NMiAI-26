@@ -24,7 +24,7 @@
 final_score = 0.7 * detection_mAP@0.5 + 0.3 * classification_mAP@0.5
 ```
 
-Both measured with COCO mAP@0.5. Key insight: **YOLO's class output IS the category_id (0-355) directly** — no separate classifier needed. The original EfficientNet-B0 stage was overwriting YOLO's trained class predictions with noisy cosine-similarity lookups, killing classification accuracy.
+Both measured with COCO mAP@0.5. YOLO's class output is the category_id (0-355) directly, so no separate classifier is needed. The original EfficientNet-B0 stage was overwriting YOLO's trained class predictions with noisy cosine-similarity lookups and killing classification accuracy.
 
 ---
 
@@ -78,10 +78,10 @@ No EfficientNet. No SAHI. No post-hoc classifier. YOLO's class head directly out
 Both VMs: g2-standard-16, nvidia-l4 (24 GB VRAM), europe-west1-c, 200 GB disk  
 Image: pytorch-2-7-cu128-ubuntu-2204-nvidia-570
 
-| VM | Job | Status |
-|----|-----|--------|
-| objdet-train  | 3-fold k-fold ensemble (fold_0 resuming, fold_1+2 pending) | Running |
-| objdet-train2 | 1792px fine-tune from ep299 checkpoint, 200 epochs | Running (~epoch 85+) |
+| VM | Job |
+|----|-----|
+| objdet-train  | 3-fold k-fold ensemble, 200 epochs each at 1280px |
+| objdet-train2 | 1792px fine-tune from ep299 checkpoint, 200 epochs |
 
 ### Training Scripts
 
@@ -111,8 +111,8 @@ bash train_kfold_sequential.sh
 First attempt. 11 epochs, mAP50 peaked at 0.469. GPU memory issues on local machine.
 
 ### v2 — Classifier bug fix (no retraining)
-Discovered EfficientNet was overwriting YOLO class predictions with wrong category_ids.  
-Set use_classifier = False. Score jumped from 0.599 to 0.847 without any retraining.
+EfficientNet was overwriting YOLO's class predictions with wrong category_ids.  
+Set use_classifier = False. Score went from 0.599 to 0.847 with zero retraining.
 
 ### v3 — GCP, YOLOv8x, 1280px (grocery_v3)
 First GCP run on objdet-train (g2-standard-16, L4 GPU).  
@@ -130,19 +130,17 @@ Score: 0.9095
 | Epoch 295   | 0.9426    | 0.9308 | 0.9743 | 0.7837   |
 
 ### v4 — SAHI tiling (abandoned)
-Added SAHI tiling + 4-scale TTA. Degraded performance and caused grader timeouts.  
-Fully removed. All SAHI code stripped from run.py and run_ensemble.py.
+Added SAHI tiling + 4-scale TTA. It degraded performance and caused grader timeouts.  
+Stripped entirely from run.py and run_ensemble.py.
 
-### v5 — GCP, YOLOv8x, 1792px (objdet-train2) — IN PROGRESS
+### v5 — GCP, YOLOv8x, 1792px (objdet-train2)
 Fine-tuning from grocery_v3_full best.pt (epoch 299) at 1792px, batch=1, 200 epochs.  
-At epoch 85: mAP50 0.978 — already ahead of v3-full best (0.9748) but only 85/200 epochs.  
-Submitted at epoch 85 and scored worse. Wait for epoch 200 before re-submitting.
+At epoch 85: mAP50 0.978, already past v3-full best (0.9748), but submitted too early and scored worse.
 
-### Parallel: 3-fold ensemble (objdet-train) — IN PROGRESS
-train_kfold_sequential.sh training fold_0 then fold_1 then fold_2, 200 epochs each at 1280px.  
-fold_0 crashed at epoch 54, resumed from last.pt. fold_1 + fold_2 pending.  
-When complete: export FP16 ONNX (~130MB each, 3x ~390MB total, fits in 420MB limit).  
-run.py auto-detects fold_*.onnx and ensembles with WBF automatically.
+### Parallel: 3-fold ensemble (objdet-train)
+train_kfold_sequential.sh running fold_0, fold_1, fold_2 sequentially at 1280px, 200 epochs each.  
+fold_0 crashed at epoch 54 and auto-resumed from last.pt. All folds export as FP16 ONNX (~130 MB each, 3x fits in the 420 MB limit).  
+run.py auto-detects fold_*.onnx and ensembles with WBF.
 
 ---
 
@@ -188,9 +186,9 @@ python3 export_and_package.py \
     --imgsz 1280 --half --name fold_0.onnx
 ```
 
-```powershell
+```bash
 # Download finished submission from VM
-& "C:\Users\erikk\...\gcloud.ps1" compute scp "objdet-train2:/home/erikk/objdet/submission.zip" D:\NMiAI\ObjectDetection\submission_v5.zip --zone=europe-west1-c
+gcloud compute scp objdet-train2:/home/<user>/objdet/submission.zip ./submission_v5.zip --zone=europe-west1-c
 ```
 
 ---
@@ -215,7 +213,7 @@ ObjectDetection/
 ├── best_v4.pt                 # Early checkpoint from objdet-train2 (ep85, undertrained)
 │
 ├── submission_v4_sahi.zip     # CURRENT BEST SUBMISSION (score 0.9095)
-├── submission_v5.zip          # 1792px ep85 — scored worse, awaiting full run
+├── submission_v5.zip          # 1792px ep85 — scored worse (pulled too early)
 │
 ├── dataset/                   # Raw COCO format dataset
 ├── dataset_yolo/              # Converted YOLO format (images/full, labels/full)
@@ -234,7 +232,7 @@ ObjectDetection/
 | NMS discarding valid TTA detections | Replaced with WBF | ~+0.01 estimated |
 | SAHI tiling causing grader timeouts | Fully removed | restored 0.9095 |
 | fold_0 training crash at epoch 54 | last.pt auto-resume in train_kfold.py | unblocked ensemble |
-| v5 submitted at only epoch 85/200 | Wait for epoch 200 | pending |
+| v5 submitted at only epoch 85/200 | Needed to wait for full 200 epoch run | score regressed |
 
 ---
 
@@ -251,28 +249,4 @@ ObjectDetection/
 Zip format: run.py at root + best.onnx (or fold_0/1/2.onnx).  
 Output: COCO JSON list [{image_id, category_id, bbox, score}]. bbox: [x, y, w, h].
 
----
 
-## What's Next
-
-1. Wait for 1792px run to finish (~epoch 200 on objdet-train2)
-   - Currently epoch 85+, mAP50 0.978 — already better than previous best at full 300 epochs
-   - Export and submit when done
-
-2. Wait for 3-fold ensemble (objdet-train)
-   - fold_0 resuming, fold_1+2 pending
-   - Export FP16: fold_0.onnx, fold_1.onnx, fold_2.onnx, package with run.py
-
-3. Check progress:
-```powershell
-# 1792px run epoch count
-& "C:\Users\erikk\...\gcloud.ps1" compute ssh objdet-train2 --zone=europe-west1-c --command="grep -v epoch /home/erikk/objdet/runs/detect/runs/detect/grocery_v3_full/results.csv | wc -l"
-
-# k-fold progress
-& "C:\Users\erikk\...\gcloud.ps1" compute ssh objdet-train --zone=europe-west1-c --command="ls runs/detect/ && tail -1 runs/detect/fold_0/results.csv 2>/dev/null"
-```
-
-4. Stop VMs when done:
-```powershell
-& "C:\Users\erikk\...\gcloud.ps1" compute instances stop objdet-train objdet-train2 --zone=europe-west1-c
-```

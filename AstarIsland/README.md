@@ -18,77 +18,72 @@ Predict a stochastic Norse civilisation simulator's final state from limited vie
 | R10 | 86.6 | 1.629 | 141.1 | V3 (9-round KB)    | 0.058 | 0.009 |
 | R14 | 77.4 | 1.980 | 153.3 | V3 (13-round KB)   | 0.405 | 0.265 |
 | R15 | **89.0** | 2.079 | **185.0** | V4 (14-round KB) | 0.328 | 0.187 |
-| R16 | pending | 2.183 | -- | V4 (15-round KB)    | est 0.331 | est 0.094 |
+| R16 | -- | 2.183 | -- | V4 (15-round KB)    | est 0.331 | est 0.094 |
 
-**Best**: R15 = 89.0 raw × 2.079 weight = **185.9 weighted** → **Rank #56 / 347**  
-**Gap to #1**: ~10.7 points (top = 196.6). A ~90+ on R16 (×2.18) would push into top 10.
+**Best**: R15 = 89.0 raw × 2.079 weight = **185.9 weighted** — **Rank #56 / 347**
 
 ---
 
-## Biggest Improvements
+## What moved the score (27 to 89)
 
-A timeline of the breakthroughs that took us from 27 to 89.
+### 1. Survival-Indexed Knowledge Base (V2 to V3, +50 pts)
 
-### 1. Survival-Indexed Knowledge Base (V2→V3, +50 pts)
+V1/V2 used static lookup tables. The problem is that hidden parameters shift every round: settlement survival ranges from 2% (R3) to 60% (R12), so a fixed prior is wrong for almost every round.
 
-**Problem**: V1/V2 used static lookup tables. But hidden parameters change every round — settlement survival ranges from 2% (R3) to 60% (R12). One-size-fits-all priors are wrong for every round.
-
-**Solution**: Index all ground-truth distributions by their round's settlement survival rate. At prediction time, estimate the current round's survival rate, then interpolate distributions from the KB. This turned a static model into one that adapts to the regime.
-
-**Impact**: V1 scored 27, V2 scored 80, V3 jumped to **86.6** on R10.
+The fix was to store all ground-truth distributions indexed by each round's survival rate. At prediction time, estimate the current survival rate and interpolate from the KB. V1 scored 27, V2 scored 80, V3 hit **86.6** on R10.
 
 ### 2. MLE Survival Estimation (V3, +5-10 pts per round)
 
-**Problem**: Counting surviving settlements from observations gives only ~50 data points and noisy estimates. If the viewport misses half the settlements, the estimate is badly biased.
+Counting surviving settlements from viewport observations gives you maybe 50 data points, and if the viewports miss the right areas the estimate is way off.
 
-**Solution**: Maximum Likelihood Estimation across **all ~10,000 observed cells** (not just settlements). Every cell — plains, forest, port, ruin — carries information about the hidden survival rate. The KB provides the likelihood model: P(observed_class | context_key, survival_rate).
+Instead: MLE over **all ~10,000 observed cells**. Every cell type (plains, forest, port, ruin) carries information about the hidden survival rate via the likelihood model P(observed_class | context_key, survival_rate).
 
 | Method | R1 err | R2 err | R10 err |
 |--------|-------:|-------:|--------:|
 | Count-based | 0.054 | 0.026 | 0.001 |
 | **Full-cell MLE** | **0.001** | **0.007** | **0.028** |
 
-### 3. Discovery of the Expansion Parameter (+2-5 pts)
+### 3. Expansion Parameter Discovery (+2-5 pts)
 
-**Problem**: Even with good survival estimates, plains cells near settlements had persistent prediction errors. Our KB error analysis showed `plains|near_sett_1-3|inland` accounted for **39.4%** of total weighted KL error.
+Even with accurate survival estimates, near-settlement plains cells had persistent errors. KB error analysis showed `plains|near_sett_1-3|inland` alone accounted for **39.4%** of total weighted KL error.
 
-**Solution**: Deep analysis (`find_hidden_params.py`) revealed a second hidden parameter: the **expansion rate** — the probability that plains cells become new settlements. This varies from 0.002 (R3) to 0.292 (R11). We built a 2D knowledge base indexed by both survival and expansion rates, enabling much better predictions for near-settlement cells.
+Dug into it with `find_hidden_params.py` and found a second hidden parameter: the **expansion rate**, the probability that plains cells become new settlements. Ranges from 0.002 (R3) to 0.292 (R11). Built a 2D KB indexed by both parameters.
 
 ### 4. 2D Gaussian Kernel Smoothing (V4, +2.1 pts avg)
 
-**Problem**: Linear interpolation between two bracketing KB points is noisy and wastes data — it ignores all rounds except the two nearest neighbours.
+Linear interpolation only uses the two nearest KB neighbours and throws away everything else.
 
-**Solution**: Replaced interpolation with **Nadaraya-Watson kernel regression** using a Gaussian kernel. For 1D (survival axis): bandwidth 0.07. For 2D (survival + expansion): bandwidths 0.07 and 0.10. Every historical round contributes to the prediction, weighted by proximity.
+Replaced with Nadaraya-Watson kernel regression (Gaussian kernel, bw_surv=0.07, bw_exp=0.10). Every historical round contributes, weighted by proximity in the survival/expansion space.
 
 LOO cross-validation across 14 rounds:
 
 | Method | Avg Score | vs 2D IDW |
 |--------|----------:|----------:|
-| 1D Linear (V3) | 84.8 | −0.4 |
+| 1D Linear (V3) | 84.8 | -0.4 |
 | **2D Kernel (V4)** | **87.3** | **+2.1** |
 | 2D IDW | 85.2 | baseline |
 | 1D Kernel | 87.0 | +1.9 |
 
 ### 5. Adaptive Bayesian Blending (V4, +1-3 pts on observed cells)
 
-**Problem**: The KB gives a prior distribution for each cell, but we also have actual stochastic observations. How to combine them?
+The KB gives a prior for each cell, but we also have direct stochastic observations. Combining them naively doesn't work because a single observation is just one Monte Carlo run.
 
-**Solution**: Dirichlet-Multinomial Bayesian update. The KB distribution becomes the Dirichlet prior, and observed class counts update it. Concentration is adaptive: 1 observation → gentle update (conc=40); 5+ observations → strong update (conc=6). This lets observations correct the prior where they're reliable, without overfitting from noisy single samples.
+Dirichlet-Multinomial update: KB distribution becomes the Dirichlet prior, observations update it. Concentration adapts: 1 observation gets a gentle update (conc=40), 5+ gets a strong one (conc=6).
 
 ### 6. Full-Grid Query Strategy (V4, eliminates 20% blind spots)
 
-**Problem**: The greedy settlement-cover strategy left 17-23% of cells per seed with **zero observations** — pure KB guesses.
+The greedy settlement-cover strategy left 17-23% of cells per seed with zero observations, so those cells were pure KB guesses.
 
-**Solution**: Systematic 3×3 grid tiling with 15×15 viewports covers 100% of the 40×40 map in 9 queries, leaving 1 extra query per seed for settlement-focused redundancy. Every cell gets at least 1 observation for both MLE and Bayesian updates.
+Switched to systematic 3x3 grid tiling with 15x15 viewports. Covers 100% of the 40x40 map in 9 queries, with 1 query left for settlement redundancy.
 
 | Strategy | 0-obs cells | 1-obs | 2+ obs |
 |----------|----------:|------:|-------:|
 | Greedy settlement-cover | 17-23% | 37-43% | 35-40% |
 | **Full-grid + settlement** | **0%** | 77% | 23% |
 
-### 7. Robust API Rate Limiting (infrastructure)
+### 7. API Rate Limiting
 
-Added exponential-backoff retry (up to 5 attempts) on all API endpoints. Previously, 429 errors would crash mid-run and waste the query budget. Now handles server rate limits gracefully across all 50 queries.
+Added exponential-backoff retry (up to 5 attempts) on all endpoints. Previously a 429 mid-run would crash the solver and waste the remaining query budget.
 
 ---
 
@@ -208,16 +203,16 @@ AstarIsland/
 | V3 | R6 | 86.6 | Survival-indexed KB + MLE estimation |
 | **V4** | **R15** | **89.0** | 2D kernel smoothing + expansion parameter + Bayesian blending |
 
-### V3 → V4 Changelog
+### V3 to V4 changes
 
-- Discovered second hidden parameter: **expansion rate** (plains → new settlements)
-- Built 2D expansion-indexed KB (survival × expansion)
-- Replaced linear interpolation with **Gaussian kernel smoothing** (bw_surv=0.07, bw_exp=0.10)
-- Added **adaptive Bayesian blending** of KB prior with per-cell observations
+- Found second hidden parameter: expansion rate (probability plains cells become new settlements)
+- Built 2D expansion-indexed KB (survival x expansion)
+- Replaced linear interpolation with Gaussian kernel smoothing (bw_surv=0.07, bw_exp=0.10)
+- Added adaptive Bayesian blending of KB prior with per-cell observations
 - Extended MLE candidate range from [0.005, 0.50] to [0.005, 0.65]
-- Kept **linear interpolation for MLE** (kernel flattens the likelihood surface)
-- Added 100% grid coverage query strategy (9 systematic viewports per seed)
-- Added exponential-backoff retry logic on all API calls
+- Kept linear interpolation for MLE only (kernel smoothing flattens the likelihood surface)
+- Switched to full-grid query strategy: 9 systematic 15x15 viewports per seed, 100% coverage
+- Added exponential-backoff retry on all API calls
 
 ---
 
@@ -235,14 +230,14 @@ AstarIsland/
 
 ## Lessons Learned
 
-1. **Survival rate is the master parameter** — it controls everything. Estimate it well and the rest follows.
-2. **MLE beats counting** — using all ~10k observed cells instead of ~50 settlements reduces estimation error 4–10×.
-3. **Index, don't average** — averaging across rounds with different hidden params hurts. Index by the hidden parameters and interpolate.
-4. **Kernel smoothing beats linear** — Gaussian kernels use all data points instead of just two neighbours. +2.1 pts on average.
-5. **Second hidden parameters matter** — expansion rate explains persistent errors in near-settlement plains cells.
-6. **Coverage > depth** — full grid coverage (0% blind cells) beats repeated observations of the same settlements.
-7. **Floor everything** — KL divergence explodes at p=0. Always enforce ≥ 0.01 and renormalize.
-8. **Prior > single observations** — GT is the average of hundreds of Monte Carlo runs. Observations help estimate hidden parameters, not individual cell distributions.
+1. Survival rate is the master parameter. Estimate it well and the rest follows.
+2. MLE over ~10k cells beats counting ~50 settlements. The error difference is 4-10x.
+3. Don't average across rounds with different hidden parameters. Index by those parameters and interpolate.
+4. Gaussian kernel smoothing uses all data points instead of just two neighbours. Worth +2.1 pts on average.
+5. Persistent errors in a specific cell type usually mean there's a hidden parameter you haven't found yet.
+6. Full grid coverage beats repeatedly querying the same settlements.
+7. KL divergence explodes at p=0. Always floor at 0.01 and renormalize.
+8. Ground truth is the average of hundreds of Monte Carlo runs. A single observation is one run. Use observations to estimate hidden parameters, not to set individual cell distributions.
 
 ---
 
