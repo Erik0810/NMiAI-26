@@ -1,6 +1,6 @@
 # Norwegian AI National Championships 2026
 
-**Platform:** [app.ainm.no](https://app.ainm.no) &nbsp;|&nbsp; **Duration:** 4 days (March 2026)
+**Platform:** [app.ainm.no](https://app.ainm.no) &nbsp;|&nbsp; **Duration:** 4 days (March 26)
 
 ---
 
@@ -10,14 +10,12 @@ Four days of live-scored AI engineering across computer vision, autonomous agent
 
 **Peak placement: 13th (Day 2).** Spent most of the competition around 20-30th before finishing at **XX**.
 
-Things that actually moved the needle:
+Takeaways:
 
-- Each scoring function had non-linear properties (mAP@0.5, KL divergence, API correctness). Reading the curve early was worth more than clean code.
-- The AstarIsland knowledge base grew from 1 to 13 rounds of ground-truth over the competition. Each new round improved predictions more than any algorithmic change.
-- Wiring Gemini 2.5 Pro to a live REST API with multi-turn self-correction required real tool schema design, not just a system prompt.
-- The biggest single score jump (+0.248) in object detection came from *removing* a classifier that was overwriting YOLO's already-correct predictions.
-- Two of three tasks needed working production deployments (GCP Cloud Run, Docker sandbox). Getting the model right was only half the problem.
-- In the stochastic sim, estimating the hidden survival rate via MLE over ~10,000 cells instead of ~50 settlements cut estimation error by 4-10x.
+- **Training on real hardware matters.** Provisioned cloud VMs with NVIDIA L4 GPUs and ran two training approaches in parallel overnight. The higher-resolution single model won out, compared to another 3-fold model that grew too large.
+- **Self-improving agentic loop.** The accounting agent ran as a containerized service that was continuously being re-deployed to the cloud. Each new version was shaped by structured analysis of the previous one: which task types failed, which API calls errored, which prompts stalled. The cycle was submit, scrape scores, diagnose, patch, redeploy. All orchestrated by Claude Opus 4.6.
+- **LLM backbone selection.** Evaluated models across providers on latency, reliability on multi-step tool use, instruction-following across 7 languages, and cost per task. Gemini 2.5 Pro (accessed through the vertex ai environment) stopped improving on the accounting tasks despite prompt engineering. Switching to Gemini 3.1 Pro Preview through Google AI studio API resolved it and jumped the score by ~20 points with no other changes.
+- **Bayesian knowledge compounds across rounds.** In the simulation task, each completed round extended a knowledge base with new ground-truth data. By round 15 the model was meaningfully better than round 1, not from code changes but from better-calibrated priors built up over time.
 
 ---
 
@@ -57,7 +55,7 @@ The pipeline is a single **YOLOv8x** (68M params, trained at 1536px on all 248 s
 
 ![Tripletex Agent Architecture](Static/tripletex_agent_architecture.drawio.png)
 
-FastAPI service on GCP Cloud Run with a single `POST /solve` endpoint. Each submission gets a fresh Tripletex sandbox. Gemini 3.1 Pro runs a function-calling loop: decide which API calls to make, execute them, then recover from errors by feeding the raw response back into context. Scored field-by-field with an efficiency bonus. Final score: **71.4 / 100, rank #32**.
+FastAPI service on GCP Cloud Run with a single `POST /solve` endpoint. Each submission gets a fresh Tripletex sandbox. Gemini 3.1 Pro runs a function-calling loop: decide which API calls to make, execute them, then recover from errors by feeding the raw response back into context. Scored field-by-field with an efficiency bonus.
 
 **Stack:** Python 3.12 · FastAPI · Gemini 3.1 Pro Preview · httpx · GCP Cloud Run · Docker
 
@@ -86,11 +84,9 @@ FastAPI service on GCP Cloud Run with a single `POST /solve` endpoint. Each subm
 
 Two hidden parameters change every round: the **settlement survival rate** (2% to 60% across rounds) and the **expansion rate** (how likely plains cells are to become new settlements). Nail those estimates and the predictions fall into place. The model went through four versions; each completed round added ground-truth to a knowledge base that made the next round better automatically.
 
-Score progression: V1 heuristic 27.3 raw / V2 GT-calibrated 80.1 raw / V3 MLE + survival KB 86.6 raw (141.1 weighted) / V4 Gaussian kernel + expansion KB + Bayesian blending **89.0 raw (185.9 weighted)**
+Score progression: V1 heuristic 27.3 raw / V2 GT-calibrated 80.1 raw / V3 MLE + survival KB 86.6 raw / V4 Gaussian kernel + expansion KB + Bayesian blending **89.0 raw**
 
-Final rank: **#56 / 347 teams.** Gap to #1 was ~10.7 weighted points after Round 15.
-
-V4 in short: run MLE over ~10,000 observed cells to estimate survival rate, count plains transitions for expansion rate, look up the cell's context key in a 2D KB indexed by both, smooth with Gaussian kernel regression across all 15 historical rounds, then Bayesian-update with any direct observations (Dirichlet-Multinomial, adaptive concentration). A 3x3 grid tiling strategy covers 100% of the 40x40 map so no cell goes unobserved.
+V4 in short: run MLE over ~10,000 observed cells to estimate survival rate, count plains transitions for expansion rate, look up the cell's context key in a 2D KB indexed by both, smooth with Gaussian kernel regression across all 23 historical rounds, then Bayesian-update with any direct observations (Dirichlet-Multinomial, adaptive concentration). A 3x3 grid tiling strategy covers 100% of the 40x40 map so no cell goes unobserved.
 
 **Stack:** Python 3.12 · NumPy · JWT auth · Custom MLE optimiser · 2D JSON knowledge base (survival x expansion)
 
@@ -113,19 +109,6 @@ NMiAI/
 ├── AstarIsland/         # Task 3 — Norse civilisation predictor (MLE + survival-indexed KB)
 └── Static/              # Architecture diagrams and example images
 ```
-
----
-
-## Results Summary
-
-| Task | Result |
-|---|---|
-| Object Detection | Score **0.9095** (98.3% of the leaderboard leader at 0.9255) |
-| Tripletex Agent | **71.4 / 100**, rank #32 — 30/30 tasks attempted |
-| Astar Island | **185.9 weighted** (89.0 raw) — V4, Round 15 — rank #56 / 347 |
-
-**Peak leaderboard position: 13th (Day 2) · Final placement: XX**
-
 ---
 
 *Built solo over 4 days. All models trained, deployed, and iterated on during the live competition window.*
