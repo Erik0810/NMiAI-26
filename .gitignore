@@ -54,6 +54,9 @@ AccountingAgent/latest_*.json
 AccountingAgent/logs_*.json
 AccountingAgent/rev*.json
 AccountingAgent/rev*.txt
+AccountingAgent/service_desc.json
+AccountingAgent/task*_full.txt
+AccountingAgent/parsed_output*.txt
 
 # ── Chrome debug profile (Selenium/CDP testing) ───────────────────────
 AccountingAgent/chrome_debug_profile/
