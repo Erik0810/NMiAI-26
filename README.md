@@ -8,7 +8,7 @@
 
 Four days of live-scored AI engineering across computer vision, autonomous agents, and probabilistic simulation modelling.
 
-**Peak placement: 13th (Day 2).** Spent most of the competition around 30th before finishing at **XX**.
+**Peak placement: 13th (Day 2).** Spent most of the competition around 20-30th before finishing at **XX**.
 
 Things that actually moved the needle:
 
@@ -57,17 +57,18 @@ The pipeline is a single **YOLOv8x** (68M params, trained at 1536px on all 248 s
 
 ![Tripletex Agent Architecture](Static/tripletex_agent_architecture.drawio.png)
 
-FastAPI service on GCP Cloud Run with a single `POST /solve` endpoint. Each submission gets a fresh Tripletex sandbox. Gemini 2.5 Pro runs a function-calling loop: decide which API calls to make, execute them, then recover from errors by feeding the raw response back into context. Scored field-by-field with an efficiency bonus.
+FastAPI service on GCP Cloud Run with a single `POST /solve` endpoint. Each submission gets a fresh Tripletex sandbox. Gemini 3.1 Pro runs a function-calling loop: decide which API calls to make, execute them, then recover from errors by feeding the raw response back into context. Scored field-by-field with an efficiency bonus. Final score: **71.4 / 100, rank #32**.
 
-**Stack:** Python 3.12 · FastAPI · Gemini 2.5 Pro · httpx · GCP Cloud Run · Docker
+**Stack:** Python 3.12 · FastAPI · Gemini 3.1 Pro Preview · httpx · GCP Cloud Run · Docker
 
 ### Plateaus and fixes
 
 | Plateau | Fix |
 |---|---|
-| Prompts in 7 different languages confused single-shot parsing | Let Gemini 2.5 Pro handle intent parsing end-to-end with a multilingual system prompt |
+| Prompts in 7 different languages confused single-shot parsing | Let the model handle intent parsing end-to-end with a multilingual system prompt |
 | Hard-coded field names caused schema mismatches against the live API | Verified every field against the Tripletex OpenAPI spec, embedded constraints in function declarations |
 | PUT requests failing silently due to missing `version` field | GET-before-PUT pattern, raw 4xx error bodies fed back to the model |
+| Score stuck at ~45 with Gemini 2.5 Pro despite prompt improvements | Swapped backend to Gemini 3.1 Pro Preview via AI Studio API key — score jumped to 62.4 overnight |
 
 ---
 
@@ -120,7 +121,7 @@ NMiAI/
 | Task | Result |
 |---|---|
 | Object Detection | Score **0.9095** (98.3% of the leaderboard leader at 0.9255) |
-| Tripletex Agent | Functional end-to-end; scored on task completion rate |
+| Tripletex Agent | **71.4 / 100**, rank #32 — 30/30 tasks attempted |
 | Astar Island | **185.9 weighted** (89.0 raw) — V4, Round 15 — rank #56 / 347 |
 
 **Peak leaderboard position: 13th (Day 2) · Final placement: XX**

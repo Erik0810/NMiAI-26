@@ -1,7 +1,7 @@
 """
 Gemini-powered accounting agent.
 
-Uses Gemini 2.5 Pro with function-calling to:
+Uses Gemini 3.1 Pro with function-calling to:
 1. Interpret the multilingual task prompt
 2. Plan the minimum set of API calls
 3. Execute them against the Tripletex API
@@ -497,7 +497,7 @@ TRIPLETEX_TOOLS = [
         ),
         types.FunctionDeclaration(
             name="list_travel_payment_types",
-            description="List travel expense payment types. Endpoint: /travelExpense/paymentType. Uses 'description' field.",
+            description="List travel expense payment types. Endpoint: /travelExpense/paymentType. ONLY valid fields: id, description. Do NOT request isPaidByEmployee or other fields — they will 400.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -535,6 +535,9 @@ TRIPLETEX_TOOLS = [
                 "Log hours on a project activity. Endpoint: POST /timesheet/entry. "
                 "Required: employee:{id}, activity:{id}, date (YYYY-MM-DD), hours (number). "
                 "Optional: project:{id}, comment, chargeable (bool). "
+                "CRITICAL: Before creating timesheet entries on a project, you MUST link an activity to the project! "
+                "Use tripletex_api_call POST /project/projectActivity with body {project:{id:PROJECT_ID}, activity:{id:ACTIVITY_ID}}. "
+                "Without this, you will get 'Aktiviteten kan ikke benyttes' (Activity cannot be used) errors. "
                 "IMPORTANT: date MUST be >= the project's startDate. If you get a date validation "
                 "error, read the project start date from the error and retry with a valid date "
                 "(use the project start date or today, whichever is later). NEVER give up on timesheet logging."
@@ -819,8 +822,9 @@ TRIPLETEX_TOOLS = [
                 "Create a supplier invoice (leverandørfaktura). Endpoint: POST /supplierInvoice. "
                 "Required: invoiceDate, supplier:{id}. "
                 "The invoice MUST include a voucher with postings for the accounting entries. "
-                "Schema: {invoiceNumber, invoiceDate, invoiceDueDate, supplier:{id}, "
-                "voucher:{date, description, postings:[{account:{id}, amountGross, vatType:{id}, description}]}}"
+                "Schema: {invoiceNumber, invoiceDate, supplier:{id}, "
+                "voucher:{date, description, postings:[{account:{id}, amountGross, vatType:{id}, description}]}} "
+                "WARNING: Do NOT include 'dueDate' or 'invoiceDueDate' — these fields do NOT exist on SupplierInvoiceDTO and will cause 422. "
                 "CRITICAL: Use 'amountGross' NOT 'amount' — the API only uses gross amounts. "
                 "CRITICAL: You MUST include BOTH debit AND credit postings. "
                 "Example: supplier invoice for 50050 NOK incl 25% VAT on account 6300: "
@@ -1151,12 +1155,32 @@ def execute_tool(client: TripletexClient, name: str, args: dict) -> dict:
                 body["project"] = {"id": args["projectId"]}
             if "comment" in args:
                 body["comment"] = args["comment"]
-            return client.create("/timesheet/entry", body)
+            result = client.create("/timesheet/entry", body)
+            # If activity is not linked to the project, link and retry once.
+            if (
+                isinstance(result, dict)
+                and result.get("_error")
+                and result.get("status_code") == 422
+                and body.get("project")
+            ):
+                detail = result.get("detail", "")
+                if isinstance(detail, str) and "Aktiviteten kan ikke benyttes" in detail:
+                    proj_id = body["project"]["id"]
+                    act_id = body["activity"]["id"]
+                    link_resp = client.create(
+                        "/project/projectActivity",
+                        {"project": {"id": proj_id}, "activity": {"id": act_id}},
+                    )
+                    if not isinstance(link_resp, dict) or not link_resp.get("_error"):
+                        result = client.create("/timesheet/entry", body)
+            return result
 
         case "list_activities":
             params = _fields_params(args)
             if "name" in args:
                 params["name"] = args["name"]
+            if not params.get("count") or int(params.get("count", 0)) < 100:
+                params["count"] = 100
             return client.get("/activity", params=params)
 
         # ── Travel Expense ───────────────────────────────────
@@ -1226,7 +1250,10 @@ def execute_tool(client: TripletexClient, name: str, args: dict) -> dict:
         case "list_accounts":
             params = _fields_params(args)
             if "number" in args:
-                params["number"] = args["number"]
+                # Fix: strip wildcard % chars — Tripletex expects exact integer, not SQL LIKE patterns
+                num_val = str(args["number"]).replace("%", "").strip()
+                if num_val:
+                    params["number"] = num_val
             return client.get("/ledger/account", params=params)
 
         case "list_vat_types":
@@ -1479,6 +1506,9 @@ def execute_tool(client: TripletexClient, name: str, args: dict) -> dict:
 
         case "create_supplier_invoice":
             body = _safe_json(args["body"])
+            # Strip invalid fields that cause 422
+            for _invalid_field in ("dueDate", "invoiceDueDate"):
+                body.pop(_invalid_field, None)
             # CRITICAL: Fix voucher postings for the Tripletex API.
             # 1. Row 0 is reserved → always set row=1,2,...
             # 2. API only uses GROSS amounts: "amount" is ignored, must use "amountGross"
@@ -1533,6 +1563,8 @@ def execute_tool(client: TripletexClient, name: str, args: dict) -> dict:
         case "tripletex_api_call":
             method = args["method"].upper()
             path = args["path"]
+            if path.startswith("/account"):
+                path = path.replace("/account", "/ledger/account", 1)
             params = _safe_json(args.get("params")) if args.get("params") else None
             body = _safe_json(args.get("body")) if args.get("body") else None
             if method == "PUT" and path.startswith("/project/") and isinstance(body, dict):
@@ -1636,6 +1668,20 @@ Payment:
 - Payment reversal: use tripletex_api_call PUT /invoice/{id}/:payment with NEGATIVE paidAmount (e.g. paidAmount=-5000).
   Do NOT use paidAmount=0 — this causes a 422 "amountBasisCurrency" error. Always use the negative of the original payment amount.
 
+Reminder fee / Overdue notice (purring / purregebyr / Mahngebühr / cargo por recordatorio):
+- STEP 1: Find the overdue invoice: list_invoices(invoiceDateFrom="2020-01-01", invoiceDateTo="2030-12-31", fields="id,invoiceNumber,invoiceDate,invoiceDueDate,customer(id,name),amount,amountOutstanding")
+  Look for invoices where amountOutstanding > 0. The overdue one is the one with a past due date.
+- STEP 2: Book the reminder fee as a VOUCHER (NOT a supplier invoice):
+  create_voucher with postings:
+    - Debit 1500 (Kundefordringer) with customer:{id} from the overdue invoice — amountGross = fee amount (positive)
+    - Credit 3400 (Purregebyr/reminder fee income) — amountGross = -fee amount (negative)
+  CRITICAL: The 1500 posting MUST include customer:{id} matching the customer on the overdue invoice!
+- STEP 3: Create a NEW invoice for the reminder fee amount:
+  - Create a product: name="Purregebyr" (or "Reminder fee"), priceExcludingVatCurrency=fee amount, vatType with 0% (fees are typically VAT-exempt)
+  - Create an order with that product for the SAME customer as the overdue invoice
+  - Create an invoice from that order
+- ALL 3 STEPS are required: find overdue → book voucher → create invoice. Missing any step loses points.
+
 Order:
 - Order endpoint is /order (NOT /order/order)
 - Required: customer:{id}, orderDate, deliveryDate
@@ -1680,6 +1726,19 @@ Project creation:
 - If the task doesn't specify a start date, use today's date
 - ALWAYS create the project — never ask the user for missing info, use sensible defaults
 
+PROJECT LIFECYCLE TASKS (create project + log hours + supplier invoice + customer invoice):
+- These are HIGH-VALUE Tier 3 tasks worth up to 13 points. Complete ALL steps!
+- FULL FLOW:
+  1. Find/create the customer (org number), find project manager employee, find supplier
+  2. Create project with fixedprice and customer
+  3. List ALL activities (count=100). Link one to the project: tripletex_api_call POST /project/projectActivity with body {"project":{"id":PID},"activity":{"id":AID}}
+  4. Create timesheet entries for EACH employee with the linked activity and project
+  5. Create supplier invoice for project costs (with voucher postings on correct expense account + credit 2400)
+  6. Create product for customer invoice → create order with project:{id} → create invoice from order
+  7. Optionally register payment
+- CRITICAL: Step 3 (activity linking) is REQUIRED before Step 4 or timesheet entries WILL FAIL.
+- If /project/projectActivity returns 404, try: tripletex_api_call POST /project/{projectId} with body updating projectActivities
+
 Order:
 - CRITICAL: 'project' field goes on the ORDER object, NOT on orderLines. OrderLine does NOT have a 'project' field.
 - Example: {customer:{id}, orderDate:'...', deliveryDate:'...', project:{id}, orderLines:[{product:{id}, count:1, unitPriceExcludingVatCurrency:1000}]}
@@ -1699,6 +1758,7 @@ IMPORTANT API SYNTAX:
   Do NOT use strings like "GENERAL" or "PROJECT_SPECIFIC" — these cause "Verdien er ikke av korrekt type" errors.
 - Prefer using EXISTING activities from list_activities instead of creating new ones.
   Most sandboxes already have activities. Only create new ones if absolutely needed.
+- ALWAYS list ALL activities (count=100) — do NOT use count=1. Different activities have different types.
 
 Ledger posting queries:
 - list_postings uses /ledger/posting (NOT /ledger/posting/openPost). Requires dateFrom and dateTo.
@@ -1723,7 +1783,9 @@ Travel expenses:
   ALWAYS include travelDetails if the task involves per diem, travel days, or overnight stays!
 - Step 2a: Add cost lines: POST /travelExpense/cost with {travelExpense:{id}, amountCurrencyIncVat, paymentType:{id}}
   - Get paymentType IDs from /travelExpense/paymentType (NOT /ledger/paymentTypeOut)
-  - Optional: costCategory:{id}, date, category (string), comments, isPaidByEmployee
+  - IMPORTANT: When listing travel payment types, ONLY use fields=id,description. Do NOT request isPaidByEmployee — it does NOT exist on the payment type model and will cause a 400 error.
+  - isPaidByEmployee is a field on the COST object (in the POST body), NOT on the payment type query.
+  - Optional cost fields: costCategory:{id}, date, category (string), comments, isPaidByEmployee
 - Step 2b: Add per diem: POST /travelExpense/perDiemCompensation with {travelExpense:{id}, location, count (days)}
   - Per diem ONLY works on "reiseregning" type (with departure/return dates set)
 - Per diem supports 'rate' field (e.g. rate:800 for 800 NOK/day) and 'count' (number of days)
@@ -1779,7 +1841,12 @@ Timesheet / Hour logging:
 - Use create_timesheet_entry tool (POST /timesheet/entry)
 - Required: employee:{id}, activity:{id}, date, hours
 - Optional: project:{id}, comment
-- First find the activity ID with list_activities(name="Design") — activities are system-wide, not per-project
+- CRITICAL PROJECT ACTIVITY LINKING: Before creating timesheet entries on a project, you MUST link an activity to the project!
+  1. List ALL activities: list_activities(fields="id,name", count=100)
+  2. Link activity to project: tripletex_api_call(method="POST", path="/project/projectActivity", body='{"project":{"id":PROJECT_ID},"activity":{"id":ACTIVITY_ID}}')
+  3. Only THEN create timesheet entries using that activity on that project.
+  Without this linking step, timesheet entries WILL fail with "Aktiviteten kan ikke benyttes" (Activity cannot be used).
+  If the POST to /project/projectActivity returns 404, try including the activity directly in the timesheet entry anyway.
 - Date MUST be >= the project's startDate. If you get a "Startdato" validation error:
   1. Parse the project start date from the error message
   2. Use that date (or today's date, whichever is later) and retry
@@ -1813,20 +1880,23 @@ Bank reconciliation (bankavstemming):
 - Keep the payment DATE from the CSV for each transaction.
 
 Currency exchange rate / Agio-Disagio tasks:
-- When an invoice was sent in foreign currency and the customer pays at a different exchange rate:
-  1. Find the invoice (list_invoices) — note the original amount in both currencies
-  2. Calculate: original_nok = foreign_amount * original_rate, payment_nok = foreign_amount * payment_rate
-  3. Register payment with create_payment: paidAmount = payment_nok (what was actually received in NOK)
-  4. The exchange rate DIFFERENCE is booked as agio (gain) or disagio (loss):
-     - If payment_rate > original_rate → gain (agio): credit account 8060 (Valutagevinst)
-     - If payment_rate < original_rate → loss (disagio): debit account 8160 (Valutatap)
-  5. Create a voucher for the exchange rate difference:
-     - Gain: debit 1500 (Kundefordringer) for the difference, credit 8060 (Valutagevinst)
-     - Loss: debit 8160 (Valutatap), credit 1500 (Kundefordringer)
-     - The difference = abs(payment_nok - original_nok)
-  6. IMPORTANT: The invoice payment (step 3) may handle the exchange difference automatically
-     via Tripletex. Check the voucher it creates. If the exchange difference is already booked, do NOT double-book it.
-  7. For supplier invoices in foreign currency: same logic but with account 2400 and pay_supplier_invoice.
+- These tasks describe an invoice already sent in foreign currency (EUR, USD, etc.) at one exchange rate,
+  and a payment received at a DIFFERENT rate. You need to: create the invoice, register payment, handle the exchange difference.
+- STEP-BY-STEP:
+  1. FIND OR CREATE THE CUSTOMER (list_customers by org number or name)
+  2. CREATE PRODUCT for the invoice line item (use foreign_amount * original_rate as priceExcludingVatCurrency in NOK)
+  3. CREATE ORDER → CREATE INVOICE with the product (this creates the invoice at the original NOK amount)
+  4. FIND PAYMENT TYPE: list_invoice_payment_types to get "Betalt til bank" id
+  5. REGISTER PAYMENT with create_payment: paidAmount = foreign_amount * NEW_rate (the actual NOK received)
+     The system calculates the exchange rate difference automatically and creates the appropriate postings.
+  6. That's it! Tripletex handles agio/disagio booking automatically when the payment amount differs from invoice amount.
+     Do NOT manually create exchange rate vouchers — the system does this.
+- CRITICAL: Do NOT credit note and re-create the invoice. Create it ONCE at the original rate amount.
+- CRITICAL: The payment amount should be the actual NOK received (foreign_amount * new_rate).
+  Tripletex will book the difference to 8060 (Valutagevinst/agio) or 8160 (Valutatap/disagio) automatically.
+- VAT: Check whether the task mentions VAT. For export/international invoices, often NO VAT (0%). 
+  Use vatType with 0% for export sales if applicable, otherwise use 25%.
+- EFFICIENCY: This task should take ~5 API calls: list_customer, create_product, create_order, create_invoice, register_payment.
 
 IMPORTANT BEHAVIORS:
 - NEVER ask the user for more information. You must complete tasks with the data provided, using sensible defaults for anything missing.
@@ -1839,6 +1909,33 @@ IMPORTANT BEHAVIORS:
 - For project number: OMIT the number field unless the task specifies one. Tripletex auto-assigns project numbers.
 - For project start date not specified, use today's date.
 
+MONTHLY CLOSE / PERIOD CLOSE (Månedsavslutning / clôture mensuelle / Monatsabschluss):
+- Monthly close tasks typically involve multiple journal entries for a given month. Create ALL required vouchers.
+- Use the LAST day of the month as the voucher date (e.g. 2026-03-31 for March 2026).
+- Common entries in a monthly close:
+  1. PREPAID EXPENSE ACCRUAL (periodisering/régularisation/Rechnungsabgrenzung):
+     Move a monthly portion from prepaid account to THE MATCHING expense account.
+     - From 1710 (Forskuddsbetalt leie) → credit 1710, debit 6300 (Leie lokale) — rent expense
+     - From 1720 (Andre depositum / Forskuddsbetalt forsikring) → credit 1720, debit 6400 (Forsikring) — insurance expense
+     - From 1750 (Forskuddsbetalt kostnad) → credit 1750, debit the matching expense category
+     CRITICAL: Use the CORRECT expense account that matches what was prepaid. Do NOT use 7790 as a generic dump.
+     If the task says "from 1710 to charges/expenses", use 6300 (Leie lokale).
+     If the task says "from 1720 to charges/expenses", use 6400 (Forsikring) or 6340 depending on context.
+  2. DEPRECIATION (avskrivning/amortissement/Abschreibung): Book monthly depreciation on fixed assets.
+     Formula: monthly_depreciation = (cost - residual_value) / useful_life_months.
+     Debit: depreciation expense account 6000 (Avskrivning på bygninger og annen fast eiendom).
+     Credit: accumulated depreciation — look up accounts in this order: 1019, 1020, 1029, 1039.
+       If NONE of these exist, use 1080 (Nedskrivning) or the closest 10xx account found.
+       NEVER credit a 6xxx or 5xxx account for depreciation — the credit MUST go to a 1xxx balance sheet account.
+  3. SALARY ACCRUAL / PROVISION (lønnsavsetning/provision salariale/Gehaltsrückstellung):
+     When a monthly close includes salary provision: debit 5000 (Lønn til ansatte), credit 2930 (Skyldig lønn).
+     Amount should be specified in the task.
+  4. ACCRUED EXPENSES (påløpte kostnader): debit expense account, credit 2960 (Påløpte kostnader).
+- IMPORTANT: These are JOURNAL ENTRIES (vouchers), NOT supplier invoices. Use create_voucher for each.
+- When looking up accounts, search by EXACT number (e.g. number="6000"), NOT by wildcards or name searches.
+  The API doesn't support name filtering — passing name= to list_accounts returns ALL accounts.
+- Complete ALL parts of the monthly close mentioned in the task. Don't stop after the first entry.
+
 ERROR RECOVERY RULES:
 - Date validation: If a date is rejected (e.g. "Startdato"), extract the valid date from the error and retry with that date.
 - Unknown field: If you get "Feltet eksisterer ikke" (field doesn't exist), you have the wrong schema. Switch to the correct field names documented in the tool descriptions.
@@ -1850,21 +1947,32 @@ ERROR RECOVERY RULES:
   Switching to a different account (like 1920) to avoid the supplier requirement is WRONG — the grading checks for account 2400.
 
 ERROR CORRECTION / JOURNAL ENTRY TASKS:
-- When asked to correct a booking/voucher error, create a NEW correction voucher (bilag) that reverses the wrong entries and books the correct ones.
-- STEP 1: Get all vouchers/postings. Use a WIDE date range (dateFrom="2020-01-01", dateTo="2030-12-31") to be safe. 
-  NEVER use the exact same date for dateFrom and dateTo — dateTo is exclusive. For a specific date X, use dateTo = X + 1 day.
-- STEP 2: Identify the errors described in the task by examining the postings.
-- STEP 3: Create ONE correction voucher that reverses the wrong entries and books the correct ones.
+- When asked to correct booking/voucher errors, create NEW correction voucher(s) that reverse the wrong entries and book the correct ones.
+- CRITICAL: You MUST fix ALL errors mentioned in the task, not just one! Read the ENTIRE task description carefully.
+  Count the number of distinct errors (wrong account, wrong amount, duplicate entry, missing entry, etc.).
+  Each error needs its own reversal+correction postings. Include ALL corrections in ONE voucher if possible.
+- STEP 1: Get all vouchers with postings. Use a WIDE date range (dateFrom="2020-01-01", dateTo="2030-12-31") to be safe.
+  Include postings in fields: fields="id,date,number,description,postings(id,amount,amountGross,account(id,number,name),supplier(id,name),customer(id,name))"
+  NEVER use the exact same date for dateFrom and dateTo — dateTo is exclusive.
+- STEP 2: Identify ALL errors described in the task by examining the postings.
+  For each error, note: which voucher, which posting(s), what is wrong, what should it be.
+  Common error types: wrong account number, wrong amount, duplicate voucher, missing entry, wrong date.
+- STEP 3: Create ONE correction voucher that addresses ALL errors:
+  For each error: reverse the wrong posting (negate amountGross) + add the correct posting.
+  Example: Task says "6340 should be 6390" and "3050 should be 2050" → your correction needs FOUR posting pairs:
+  1. Reverse wrong: credit 6340, debit 2400. 2. Book correct: debit 6390, credit 2400.
+  3. Reverse wrong: credit 3050, debit 2400. 4. Book correct: debit 2050, credit 2400.
 - When moving amounts between accounts, ALWAYS preserve the original dimensions: supplier:{id} on 2400, customer:{id} on 1500.
 - If the original voucher has a supplier on account 2400, your correction voucher MUST also reference that same supplier on any 2400 postings.
 - CRITICAL: Voucher postings MUST balance: sum of all amountGross values = 0. Double-check your arithmetic!
   For reversal: negate EVERY posting from the original (debit becomes credit, credit becomes debit).
   Then add correct postings. Keep reversal and correction in the SAME voucher if possible.
+- For DUPLICATE voucher corrections: reverse the entire duplicate by negating all its postings.
 - CRITICAL: Do NOT use vatType on correction vouchers unless the original used it. VAT changes the effective amount!
   If the original posting was on an expense account with VAT, the reversal must use the same vatType so the
   system-generated VAT posting also reverses. Or use vatType with id=0 (no VAT) and manually handle amounts.
 - EFFICIENCY: Read the existing vouchers ONCE (list vouchers with WIDE date range), extract the wrong postings,
-  then create ONE correction voucher. Do NOT make multiple correction vouchers.
+  then create ONE correction voucher covering ALL errors. Do NOT stop after fixing just one error.
 
 When you receive a task:
 1. What language is the prompt in? Understand it.
@@ -1910,6 +2018,7 @@ async def run_agent(
 
     # ── Detect task type from prompt to optimize pre-task calls ──────
     prompt_lower = prompt.lower()
+    has_files = bool(files)
     # Invoice/payment keywords in all 7 supported languages
     _INVOICE_KEYWORDS = [
         "invoice", "faktura", "rechnung", "factura", "fatura", "facture",
@@ -1940,6 +2049,68 @@ async def run_agent(
 
     # ── Pre-task setup: conditional based on task type ───────────────
     prefetch_context = []  # Lines of context to inject into user message
+
+    # ── UNIVERSAL PRE-FETCH: accounts, VAT types, payment types ───────────────
+    # Skip for file-based tasks to keep PDF context clear and reduce token load.
+    if not has_files:
+        try:
+            # Fetch ALL accounts (number → id mapping)
+            all_accounts_resp = tripletex_client.get("/ledger/account", params={"fields": "id,number,name", "count": 1000})
+            if "_error" not in all_accounts_resp:
+                all_accounts = all_accounts_resp.get("values", [])
+                if all_accounts:
+                    # Build a compact account map — use terse format to save tokens
+                    # Filter to commonly used ranges: 1000-1999, 2000-2999, 3000-3999, 4000-8999
+                    acct_lines = []
+                    for a in all_accounts:
+                        num = a.get('number', 0)
+                        if isinstance(num, (int, float)) and 1000 <= num <= 8999:
+                            acct_lines.append(f"{num}:{a.get('id')}:{a.get('name', '')}")
+                    prefetch_context.append(f"ACCOUNTS({len(acct_lines)}):\n" + " | ".join(acct_lines))
+                    logger.info(f"Pre-task: fetched {len(all_accounts)} accounts, included {len(acct_lines)}")
+
+            # Fetch ALL VAT types — only include commonly used ones
+            vat_resp = tripletex_client.get("/ledger/vatType", params={"fields": "id,name,percentage,number", "count": 100})
+            if "_error" not in vat_resp:
+                vat_vals = vat_resp.get("values", [])
+                if vat_vals:
+                    # Filter to most useful VAT types (0%, 12%, 15%, 25% and their variants)
+                    vat_lines = []
+                    for v in vat_vals:
+                        pct = v.get('percentage', -1)
+                        if pct in (0, 12, 15, 25):
+                            vat_lines.append(f"id={v.get('id')}:{v.get('name', '')}:{pct}%:nr{v.get('number', '')}")
+                    if not vat_lines:
+                        # No common ones found, include all
+                        for v in vat_vals:
+                            vat_lines.append(f"id={v.get('id')}:{v.get('name', '')}:{v.get('percentage', '')}%:nr{v.get('number', '')}")
+                    prefetch_context.append(f"VAT_TYPES({len(vat_lines)}):\n" + " | ".join(vat_lines))
+                    logger.info(f"Pre-task: fetched {len(vat_vals)} VAT types, included {len(vat_lines)}")
+
+            # Fetch invoice payment types (incoming)
+            pay_in_resp = tripletex_client.get("/invoice/paymentType", params={"fields": "id,description"})
+            if "_error" not in pay_in_resp:
+                pay_in_vals = pay_in_resp.get("values", [])
+                if pay_in_vals:
+                    pay_lines = []
+                    for p in pay_in_vals:
+                        pay_lines.append(f"  id={p.get('id')} {p.get('description', '')}")
+                    prefetch_context.append(f"PRE-FETCHED INVOICE PAYMENT TYPES (incoming):\n" + "\n".join(pay_lines))
+
+            # Fetch outgoing payment types
+            pay_out_resp = tripletex_client.get("/ledger/paymentTypeOut", params={"fields": "id,description", "count": 50})
+            if "_error" not in pay_out_resp:
+                pay_out_vals = pay_out_resp.get("values", [])
+                if pay_out_vals:
+                    pay_lines = []
+                    for p in pay_out_vals:
+                        pay_lines.append(f"  id={p.get('id')} {p.get('description', '')}")
+                    prefetch_context.append(f"PRE-FETCHED OUTGOING PAYMENT TYPES:\n" + "\n".join(pay_lines))
+
+        except Exception as e:
+            logger.warning(f"Pre-task universal prefetch failed (non-fatal): {e}")
+    else:
+        logger.info("Pre-task: skipping universal prefetch for file-based task")
 
     if needs_bank:
         # Configure bank account 1920 — only for tasks that involve invoices/payments
@@ -1973,44 +2144,11 @@ async def run_agent(
         except Exception as e:
             logger.warning(f"Pre-task bank setup failed (non-fatal): {e}")
 
-        # Pre-fetch account 2400 and common VAT types for supplier invoice tasks
-        if needs_supplier_context:
-            try:
-                acct2400 = tripletex_client.get(
-                    "/ledger/account",
-                    params={"number": "2400", "fields": "id,number"},
-                )
-                if "_error" not in acct2400:
-                    vals = acct2400.get("values", [])
-                    if vals and isinstance(vals, list):
-                        aid = vals[0].get("id")
-                        prefetch_context.append(f"PRE-FETCHED: Account 2400 (Leverandørgjeld) has id={aid}")
-
-                vat_resp = tripletex_client.get(
-                    "/ledger/vatType",
-                    params={"fields": "id,name,percentage"},
-                )
-                if "_error" not in vat_resp:
-                    vals = vat_resp.get("values", [])
-                    if isinstance(vals, list):
-                        # Extract key VAT types
-                        for v in vals:
-                            name = (v.get("name") or "").lower()
-                            vid = v.get("id")
-                            pct = v.get("percentage")
-                            if "fradrag" in name and "inngående" in name and "høy" in name:
-                                prefetch_context.append(f"PRE-FETCHED: Input VAT 25% (Fradrag inngående avgift, høy sats) has id={vid}")
-                            elif "utgående" in name and "høy" in name and pct == 25:
-                                prefetch_context.append(f"PRE-FETCHED: Output VAT 25% (Utgående avgift, høy sats) has id={vid}")
-                            elif "middels" in name and pct == 15:
-                                prefetch_context.append(f"PRE-FETCHED: VAT 15% (middels sats) has id={vid}")
-                logger.info(f"Pre-task: supplier context fetched ({len(prefetch_context)} items)")
-            except Exception as e:
-                logger.warning(f"Pre-task supplier context fetch failed (non-fatal): {e}")
+        # NOTE: Account 2400 and VAT types are already fetched in universal pre-fetch above
     else:
         logger.info("Pre-task: skipping bank setup (not an invoice/payment task)")
 
-    # ── Pre-task: Division setup for salary tasks ────────────────────
+    # ── Pre-task: Division + full employment setup for salary tasks ────
     division_id = None
     if needs_salary_division:
         try:
@@ -2023,7 +2161,6 @@ async def run_agent(
                     logger.info(f"Pre-task: found existing division id={division_id}")
                 else:
                     # No divisions exist — try to create one
-                    # Get a municipality
                     mun_resp = tripletex_client.get("/municipality", params={"count": 1})
                     mun_id = None
                     if "_error" not in mun_resp:
@@ -2032,7 +2169,6 @@ async def run_agent(
                             mun_id = mun_vals[0].get("id")
 
                     if mun_id:
-                        today_str = date.today().isoformat()
                         div_body = {
                             "name": "Hovedvirksomhet",
                             "startDate": "2024-01-01",
@@ -2040,7 +2176,6 @@ async def run_agent(
                             "municipality": {"id": mun_id},
                             "organizationNumber": "000000000",
                         }
-                        # Use a different org number than company (sub-unit)
                         div_result = tripletex_client.create("/division", div_body)
                         if "_error" not in div_result:
                             division_id = div_result.get("id") or div_result.get("value", {}).get("id")
@@ -2052,8 +2187,95 @@ async def run_agent(
                     else:
                         logger.warning("Pre-task: could not find municipality for division")
             logger.info(f"Pre-task: salary division setup complete (division_id={division_id})")
+
+            # ── Pre-task: Find employee from prompt and ensure employment exists ──
+            if division_id:
+                import re
+                email_match = re.search(r'[\w.+-]+@[\w.-]+\.\w+', prompt)
+                if email_match:
+                    emp_email = email_match.group(0)
+                    emp_resp = tripletex_client.get("/employee", params={"email": emp_email, "fields": "id,firstName,lastName,email,dateOfBirth"})
+                    if "_error" not in emp_resp:
+                        emp_vals = emp_resp.get("values", [])
+                        if emp_vals and isinstance(emp_vals, list):
+                            emp = emp_vals[0]
+                            emp_id = emp.get("id")
+                            prefetch_context.append(f"PRE-FETCHED: Employee {emp.get('firstName', '')} {emp.get('lastName', '')} id={emp_id}")
+
+                            # Ensure dateOfBirth is set
+                            if not emp.get("dateOfBirth"):
+                                full_emp = tripletex_client.get(f"/employee/{emp_id}", params={"fields": "*"})
+                                if "_error" not in full_emp:
+                                    full_emp_data = full_emp.get("value", full_emp)
+                                    full_emp_data["dateOfBirth"] = "1990-01-01"
+                                    tripletex_client.put(f"/employee/{emp_id}", json=full_emp_data)
+                                    logger.info(f"Pre-task: set dateOfBirth for employee {emp_id}")
+
+                            # Check if employment exists
+                            employment_resp = tripletex_client.get("/employee/employment", params={"employeeId": emp_id, "fields": "id,version,startDate,division(id)"})
+                            has_employment = False
+                            if "_error" not in employment_resp:
+                                emp_vals2 = employment_resp.get("values", [])
+                                if emp_vals2 and isinstance(emp_vals2, list):
+                                    # Check if any employment has a division
+                                    for empl in emp_vals2:
+                                        div = empl.get("division")
+                                        if div and div.get("id"):
+                                            has_employment = True
+                                            prefetch_context.append(f"PRE-FETCHED: Employment id={empl.get('id')} with division={div.get('id')}")
+                                            break
+                                    if not has_employment:
+                                        # Employment exists but no division — update it
+                                        empl = emp_vals2[0]
+                                        empl_id = empl.get("id")
+                                        empl_version = empl.get("version", 0)
+                                        tripletex_client.put(f"/employee/employment/{empl_id}", json={
+                                            "id": empl_id, "version": empl_version,
+                                            "division": {"id": division_id}
+                                        })
+                                        has_employment = True
+                                        logger.info(f"Pre-task: linked employment {empl_id} to division {division_id}")
+
+                            if not has_employment:
+                                # Create employment
+                                empl_result = tripletex_client.create("/employee/employment", {
+                                    "employee": {"id": emp_id},
+                                    "startDate": "2024-01-01",
+                                    "isMainEmployer": True,
+                                    "division": {"id": division_id},
+                                })
+                                if "_error" not in empl_result:
+                                    new_empl_id = empl_result.get("id") or empl_result.get("value", {}).get("id")
+                                    if new_empl_id:
+                                        # Also create employment details
+                                        tripletex_client.create("/employee/employment/details", {
+                                            "employment": {"id": new_empl_id},
+                                            "date": "2024-01-01",
+                                            "percentageOfFullTimeEquivalent": 100,
+                                        })
+                                        logger.info(f"Pre-task: created employment {new_empl_id} with division {division_id}")
+                                        prefetch_context.append(f"PRE-FETCHED: Employment created id={new_empl_id} with division={division_id}")
+                                else:
+                                    logger.warning(f"Pre-task: employment creation failed: {empl_result}")
+
+                            # Pre-fetch salary types too
+                            sal_resp = tripletex_client.get("/salary/type", params={"fields": "id,number,name", "count": 50})
+                            if "_error" not in sal_resp:
+                                sal_vals = sal_resp.get("values", [])
+                                if sal_vals:
+                                    for st in sal_vals:
+                                        st_name = (st.get("name") or "").lower()
+                                        st_id = st.get("id")
+                                        st_num = st.get("number", "")
+                                        if any(kw in st_name for kw in ["fastlønn", "månedslønn", "fast lønn", "måneds"]):
+                                            prefetch_context.append(f"PRE-FETCHED: Salary type '{st.get('name')}' (base salary) id={st_id} number={st_num}")
+                                        elif any(kw in st_name for kw in ["bonus", "tillegg", "gratiale"]):
+                                            prefetch_context.append(f"PRE-FETCHED: Salary type '{st.get('name')}' (bonus/supplement) id={st_id} number={st_num}")
+                                        elif any(kw in st_name for kw in ["timelønn", "time"]):
+                                            prefetch_context.append(f"PRE-FETCHED: Salary type '{st.get('name')}' (hourly) id={st_id} number={st_num}")
+                                    logger.info(f"Pre-task: fetched {len(sal_vals)} salary types")
         except Exception as e:
-            logger.warning(f"Pre-task salary division setup failed (non-fatal): {e}")
+            logger.warning(f"Pre-task salary setup failed (non-fatal): {e}")
 
     # Inject pre-fetched context into user message
     if prefetch_context:
@@ -2064,14 +2286,18 @@ async def run_agent(
 
     contents.append(types.Content(role="user", parts=user_parts))
 
-    # Initialize Gemini client (Google AI API key for 3.1 Pro access)
-    gemini_api_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is required. Set it in .env or as a Cloud Run env var.")
-    gemini_client = genai.Client(api_key=gemini_api_key)
+    # Initialize Gemini client via API key (preferred), fallback to Vertex AI if missing.
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if api_key:
+        gemini_client = genai.Client(api_key=api_key)
+    else:
+        gcp_project = os.environ.get("GCP_PROJECT", "ainm26osl-764")
+        gcp_location = os.environ.get("GCP_LOCATION", "europe-west1")
+        gemini_client = genai.Client(vertexai=True, project=gcp_project, location=gcp_location)
 
     # Agent loop
     recent_errors = []  # Track recent error messages for loop detection
+    recent_calls = []  # Track recent tool calls (fn_name + args) for loop detection
     consecutive_empty = 0  # Track consecutive empty responses
     for turn in range(max_turns):
         logger.info(f"=== Agent turn {turn + 1}/{max_turns} ===")
@@ -2087,7 +2313,7 @@ async def run_agent(
                         system_instruction=SYSTEM_PROMPT,
                         tools=TRIPLETEX_TOOLS,
                         temperature=0.0,
-                        max_output_tokens=16384,
+                        max_output_tokens=65536,
                         thinking_config=types.ThinkingConfig(
                             thinking_budget=24576,
                         ),
@@ -2189,6 +2415,10 @@ async def run_agent(
 
             logger.info(f"Tool call: {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:300]})")
 
+            # Track call signature for repeated-call detection
+            call_sig = f"{fn_name}|{json.dumps(fn_args, sort_keys=True, ensure_ascii=False)}"
+            recent_calls.append(call_sig)
+
             try:
                 result = execute_tool(tripletex_client, fn_name, fn_args)
             except Exception as e:
@@ -2234,6 +2464,24 @@ async def run_agent(
             )
 
         contents.append(types.Content(role="user", parts=function_response_parts))
+
+        # Repeated SUCCESSFUL call detection: if the same call (fn+args) appears 3+ times in recent history, inject nudge
+        if len(recent_calls) >= 3:
+            last_call = recent_calls[-1]
+            repeat_count = sum(1 for c in recent_calls[-8:] if c == last_call)
+            if repeat_count >= 3:
+                nudge_repeat = (
+                    f"WARNING: You have called the EXACT same tool with the EXACT same arguments {repeat_count} times recently. "
+                    f"STOP repeating this call. The data you need is already in the conversation above. "
+                    f"Move on to the NEXT step: create the required voucher, invoice, payment, or other entity. "
+                    f"If you are stuck, summarize what you accomplished and finish."
+                )
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=nudge_repeat)],
+                ))
+                logger.warning(f"Injected repeated-call nudge: {last_call[:150]} repeated {repeat_count}x")
+                recent_calls.clear()
 
         # Repeated error detection: if last 3+ errors are the same, inject a nudge
         if len(recent_errors) >= 3 and len(set(recent_errors[-3:])) == 1:

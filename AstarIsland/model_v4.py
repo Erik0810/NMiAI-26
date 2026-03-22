@@ -218,7 +218,12 @@ def interpolate_distribution(rates, dists, target_rate):
 
 def interpolate_distribution_linear(rates, dists, target_rate):
     """
-    Legacy linear interpolation (kept for comparison/fallback).
+    Linear interpolation for MLE — with edge extrapolation.
+    
+    When target_rate is beyond the KB range, extrapolates from the last two
+    data points instead of clamping. This lets MLE distinguish rates above
+    the max KB rate, preventing the flat likelihood surface that caused
+    R18's MLE to be biased low (0.508 vs GT 0.632).
     """
     rates = np.array(rates, dtype=float)
     dists = np.array(dists, dtype=float)
@@ -226,9 +231,29 @@ def interpolate_distribution_linear(rates, dists, target_rate):
     if len(rates) == 1:
         result = dists[0].copy()
     elif target_rate <= rates[0]:
-        result = dists[0].copy()
+        if len(rates) >= 2:
+            # Extrapolate below: use first two points
+            r0, r1 = rates[0], rates[1]
+            if r1 - r0 < 1e-10:
+                result = dists[0].copy()
+            else:
+                t = (target_rate - r0) / (r1 - r0)  # t will be negative
+                t = max(t, -1.0)  # Limit extrapolation to 1 interval
+                result = (1 - t) * dists[0] + t * dists[1]
+        else:
+            result = dists[0].copy()
     elif target_rate >= rates[-1]:
-        result = dists[-1].copy()
+        if len(rates) >= 2:
+            # Extrapolate above: use last two points
+            r0, r1 = rates[-2], rates[-1]
+            if r1 - r0 < 1e-10:
+                result = dists[-1].copy()
+            else:
+                t = (target_rate - r0) / (r1 - r0)  # t will be > 1.0
+                t = min(t, 2.0)  # Limit extrapolation to 1 interval beyond
+                result = (1 - t) * dists[-2] + t * dists[-1]
+        else:
+            result = dists[-1].copy()
     else:
         idx = int(np.searchsorted(rates, target_rate)) - 1
         idx = max(0, min(idx, len(rates) - 2))
@@ -362,8 +387,8 @@ def estimate_survival_mle(observations, all_seeds_initial_states, W, H, survival
     if len(samples) < 100:
         return DEFAULT_SURVIVAL_RATE, False
     
-    # Candidate survival rates — extend range to 0.65 for high-survival rounds
-    candidates = np.linspace(0.005, 0.65, 260)
+    # Candidate survival rates — extend range to 0.85 for very high-survival rounds
+    candidates = np.linspace(0.005, 0.85, 340)
     key_dists = {}
     for key in key_set:
         entry = context_keys[key]

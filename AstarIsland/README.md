@@ -3,24 +3,49 @@
 Predict a stochastic Norse civilisation simulator's final state from limited viewport observations.
 
 **Platform**: [app.ainm.no](https://app.ainm.no) | **API**: api.ainm.no/astar-island/  
-**Team**: Pining for the fjords | **Rank**: #56 / 347 teams
+**Team**: Pining for the fjords
 
 ---
 
-## Current Status (2026-03-21)
+## Current Status (2026-03-22)
 
 | Round | Score | Weight | Weighted | Model | Survival | Expansion |
 |-------|------:|-------:|---------:|-------|:--------:|:---------:|
 | R1  | 27.3 | 1.050 | 28.7  | V1 (heuristic)     | 0.419 | 0.170 |
 | R2  | 80.1 | 1.103 | 88.3  | V2 (GT-calibrated) | 0.415 | 0.205 |
-| R6  | 78.2 | 1.340 | 104.7 | V3 (6-round KB)    | 0.415 | 0.264 |
+| R6  | 78.2 | 1.340 | 104.8 | V3 (6-round KB)    | 0.415 | 0.264 |
 | R7  | 64.2 | 1.407 | 90.4  | V3 (6-round KB)    | 0.423 | 0.147 |
 | R10 | 86.6 | 1.629 | 141.1 | V3 (9-round KB)    | 0.058 | 0.009 |
-| R14 | 77.4 | 1.980 | 153.3 | V3 (13-round KB)   | 0.405 | 0.265 |
-| R15 | **89.0** | 2.079 | **185.0** | V4 (14-round KB) | 0.328 | 0.187 |
-| R16 | -- | 2.183 | -- | V4 (15-round KB)    | est 0.331 | est 0.094 |
+| R14 | 77.4 | 1.980 | 153.3 | V3 (13-round KB)   | 0.522 | 0.265 |
+| R15 | 89.0 | 2.079 | 184.9 | V4 (14-round KB)   | 0.328 | 0.187 |
+| R16 | 81.0 | 2.183 | 176.8 | V4 (15-round KB)   | 0.294 | 0.080 |
+| R17 | 85.2 | 2.292 | 195.4 | V4 (16-round KB)   | 0.454 | 0.290 |
+| R18 | 74.3 | 2.407 | 178.7 | V4 (17-round KB)   | 0.632 | 0.381 |
+| R19 | 87.0 | 2.527 | **219.9** | V4 (18-round KB) | 0.041 | 0.012 |
+| R22 | --   | 2.925 | --    | V4 (19-round KB)   | est 0.130 | est 0.030 |
 
-**Best**: R15 = 89.0 raw × 2.079 weight = **185.9 weighted** — **Rank #56 / 347**
+**Best weighted**: R19 = 87.0 x 2.527 = **219.9**  
+**Leaderboard**: #1 is 261.2. Gap is about 41 points.
+
+---
+
+## Score history and plateaus
+
+### Plateau 1: The 80-point wall (R2 through R7)
+
+V1 was a disaster at 27.3. V2 jumped to 80 by calibrating from ground truth, but then we got stuck. R6 scored 78.2, R7 dropped to 64.2. The model was averaging distributions across rounds that had wildly different hidden parameters. A round with 2% survival and a round with 42% survival were getting blended into the same lookup table. The fix was indexing the KB by survival rate so the model could pick the right regime.
+
+### Plateau 2: The 87-point ceiling (R10 through R14)
+
+R10 hit 86.6 which felt great at the time. Then R14 came in at 77.4 despite having more training data. The problem was twofold: linear interpolation between only two KB neighbours was noisy, and we were missing a second hidden parameter (expansion rate) that controls how fast settlements spread to new plains cells. Plains near settlements accounted for 39% of total prediction error. Adding the expansion dimension to the KB and switching to Gaussian kernel smoothing across all historical rounds broke through to 89.0 on R15.
+
+### Plateau 3: The MLE extrapolation failure (R18)
+
+R18 scored 74.3 which was our worst result since R7. The cause: R18 had the highest survival rate we had ever seen (0.632) and also the highest expansion (0.381). The MLE search range was capped at 0.65 and linear interpolation clamped at the edge of the KB (max 0.599), so the model literally could not represent what was happening. The MLE found 0.508 when the true value was 0.632. Fixes: extended MLE range to [0.005, 0.85], added linear extrapolation beyond KB edges instead of clamping, and rebuilt the KB with R18 data. Retroactive testing showed these fixes would have scored 85.0 instead of 74.3.
+
+### Current situation
+
+R19 bounced back to 87.0 (low-survival round, well within KB range). The best weighted is now 219.9 but the top of the leaderboard is at 261. That gap is roughly one round of high performance on a recent (high-weight) round. The model is well calibrated for survival rates 0.02-0.63, but extreme values beyond the KB range remain a risk. Each new round helps because it adds another data point to interpolate from.
 
 ---
 
@@ -95,17 +120,17 @@ Added exponential-backoff retry (up to 5 attempts) on all endpoints. Previously 
 Static cell (mountain/ocean)?  ──────────────────────>  hardcoded prior
          │ no
 Step 1: Estimate survival rate     MLE over ~10,000 cells
-        from observations          Uses LINEAR interp in KB (sharp likelihood)
+        from observations          Uses LINEAR interp in KB (with edge extrapolation)
          │
-Step 2: Estimate expansion rate    Count plains→settlement transitions
+Step 2: Estimate expansion rate    Count plains->settlement transitions
          │
 Step 3: Compute context key        terrain, coastal, dist-to-settlement, forest count
          │
-Step 4: 2D Kernel interpolation    Gaussian kernel over all 15 historical rounds
+Step 4: 2D Kernel interpolation    Gaussian kernel over all 19 historical rounds
         from expansion KB          bw_surv=0.07, bw_exp=0.10
          │
 Step 5: Bayesian update            Dirichlet-Multinomial with adaptive concentration
-        with per-cell observations  1 obs → gentle (conc=40), 5+ obs → strong (conc=6)
+        with per-cell observations  1 obs -> gentle (conc=40), 5+ obs -> strong (conc=6)
          │
 Final:  Floor (0.01) + renorm     Double pass to ensure valid distribution
 ```
@@ -114,11 +139,11 @@ Final:  Floor (0.01) + renorm     Double pass to ensure valid distribution
 
 Two complementary KBs built from ground truth of all completed rounds:
 
-**Survival-indexed** (`survival_indexed_kb.json`) — 52 context keys × 15 rounds:
+**Survival-indexed** (`survival_indexed_kb.json`) -- 52 context keys x 19 rounds:
 - Each key maps to sorted survival rates + corresponding class distributions
 - Used for 1D interpolation (fallback) and MLE likelihood computation
 
-**Expansion-indexed** (`expansion_indexed_kb.json`) — 52 context keys × 15 rounds:
+**Expansion-indexed** (`expansion_indexed_kb.json`) -- 52 context keys x 19 rounds:
 - Each key maps to (survival_rate, expansion_rate) pairs + distributions
 - Used for primary 2D kernel interpolation during prediction
 
@@ -131,16 +156,16 @@ Two complementary KBs built from ground truth of all completed rounds:
 | Plains | `plains\|near_sett_{0-10}\|{coast}` | `plains\|near_sett_3\|inland` |
 | Forest | `forest\|near_sett_{0-10}[|coastal]` | `forest\|near_sett_1\|coastal` |
 
-Fallback chain: decrease settlement distance → drop coastal → try alternative distance bins.
+Fallback chain: decrease settlement distance, then drop coastal, then try alternative distance bins.
 
-### Historical Survival Rates (15 rounds)
+### Historical Survival Rates (19 rounds)
 
 | Range | Rounds | Character |
 |-------|--------|-----------|
-| 0.00–0.10 | R3 (0.018), R10 (0.058), R8 (0.068) | Near-total collapse |
-| 0.20–0.35 | R13 (0.226), R4 (0.235), R9 (0.275), R15 (0.328), R5 (0.330) | Low–moderate survival |
-| 0.40–0.45 | R6 (0.415), R2 (0.415), R1 (0.419), R7 (0.423) | High survival |
-| 0.50–0.60 | R11 (0.499), R14 (0.522), R12 (0.600) | Very high survival |
+| 0.00-0.07 | R3 (0.018), R19 (0.041), R10 (0.058), R8 (0.068) | Near-total collapse |
+| 0.13-0.35 | R20 (0.130), R13 (0.226), R4 (0.235), R21 (0.246), R9 (0.275), R16 (0.294), R15 (0.328), R5 (0.330) | Low to moderate survival |
+| 0.40-0.45 | R6 (0.415), R2 (0.415), R1 (0.419), R7 (0.423), R17 (0.454) | High survival |
+| 0.50-0.63 | R11 (0.499), R14 (0.522), R12 (0.600), R18 (0.632) | Very high survival |
 
 ---
 
@@ -151,12 +176,15 @@ AstarIsland/
 ├── config.py               # Auth token, constants, terrain-to-class mapping
 ├── client.py               # API client: all endpoints + retry/rate-limiting
 ├── model_v4.py             # V4 prediction engine: 2D kernel + Bayesian blending
+├── model_v5.py             # Experimental V5: settlement health scoring (not used)
 ├── solve_v4.py             # Main solver: queries, MLE, prediction, submission
 ├── continue_r16.py         # Continuation script for mid-round re-runs
 ├── build_kb.py             # Build survival-indexed KB from GT data
 ├── build_expansion_kb.py   # Build 2D expansion-indexed KB from GT data
 ├── learn.py                # Post-round GT analysis + feature extraction
 ├── validate_v4.py          # Offline validation against saved GT
+├── validate_v4_v5.py       # V4 vs V5 comparison harness
+├── sweep_v5.py             # Parameter sweep for V5 configs
 ├── check_scores.py         # Per-round scores, ranks, and weights
 ├── check_status.py         # Active round detail inspection
 ├── find_rank.py            # Find team on leaderboard
@@ -170,11 +198,11 @@ AstarIsland/
 │   ├── SCORING.md
 │   └── SIMULATION_MECHANICS.md
 ├── knowledge_base/
-│   ├── survival_indexed_kb.json     # 52 keys × 15 rounds (1D)
-│   ├── expansion_indexed_kb.json    # 52 keys × 15 rounds (2D)
+│   ├── survival_indexed_kb.json     # 52 keys x 19 rounds (1D)
+│   ├── expansion_indexed_kb.json    # 52 keys x 19 rounds (2D)
 │   └── cumulative_knowledge.json    # Legacy KB
 ├── round_data/
-│   ├── gt_r{N}_seed{S}.npz         # Ground truth arrays (R1–R5)
+│   ├── gt_r{N}_seed{S}.npz         # Ground truth arrays (R1-R5)
 │   └── observations_*.json          # Saved viewport observations per round
 └── archive/                # Superseded code: V1/V2/V3 models, analysis scripts
 ```
@@ -183,13 +211,16 @@ AstarIsland/
 
 | File | Purpose | Lines |
 |------|---------|------:|
-| `model_v4.py` | 2D kernel interp, MLE estimation, Bayesian blending, fallback chain | 697 |
-| `learn.py` | GT download, feature extraction, training data export | 335 |
-| `solve_v4.py` | Query planning (full-grid + settlement cover), predictions, submission | 292 |
-| `validate_v4.py` | Offline validation: V3 oracle vs V4 variants on historical GT | 247 |
-| `build_kb.py` | Survival-indexed KB builder (from GT of all completed rounds) | 244 |
-| `client.py` | REST client: simulate, submit, analysis, leaderboard (retry on 429) | 234 |
-| `build_expansion_kb.py` | 2D KB builder (survival × expansion dimensions) | 186 |
+| `model_v4.py` | 2D kernel interp, MLE estimation, Bayesian blending, fallback chain | ~710 |
+| `model_v5.py` | V5 experiment: settlement health, KB confidence weighting | ~300 |
+| `learn.py` | GT download, feature extraction, training data export | 336 |
+| `solve_v4.py` | Query planning (full-grid + settlement cover), predictions, submission | 293 |
+| `validate_v4.py` | Offline validation: V3 oracle vs V4 variants on historical GT | 248 |
+| `validate_v4_v5.py` | V4 vs V5 head-to-head comparison across all rounds | ~220 |
+| `sweep_v5.py` | Parameter sweep: 13 V5 configs vs V4 baseline | ~220 |
+| `build_kb.py` | Survival-indexed KB builder (from GT of all completed rounds) | 245 |
+| `client.py` | REST client: simulate, submit, analysis, leaderboard (retry on 429) | 235 |
+| `build_expansion_kb.py` | 2D KB builder (survival x expansion dimensions) | 186 |
 | `config.py` | `BASE_URL`, `PROB_FLOOR=0.01`, `TERRAIN_TO_CLASS`, JWT token | 24 |
 
 ---
@@ -201,7 +232,8 @@ AstarIsland/
 | V1 | R1 | 27.3 | Heuristic priors |
 | V2 | R2 | 80.1 | GT-calibrated lookup tables |
 | V3 | R6 | 86.6 | Survival-indexed KB + MLE estimation |
-| **V4** | **R15** | **89.0** | 2D kernel smoothing + expansion parameter + Bayesian blending |
+| V4 | R15 | 89.0 | 2D kernel smoothing + expansion parameter + Bayesian blending |
+| V5 | -- | -- | Experimental: settlement health scoring. Tested, no improvement over V4 |
 
 ### V3 to V4 changes
 
@@ -209,22 +241,32 @@ AstarIsland/
 - Built 2D expansion-indexed KB (survival x expansion)
 - Replaced linear interpolation with Gaussian kernel smoothing (bw_surv=0.07, bw_exp=0.10)
 - Added adaptive Bayesian blending of KB prior with per-cell observations
-- Extended MLE candidate range from [0.005, 0.50] to [0.005, 0.65]
-- Kept linear interpolation for MLE only (kernel smoothing flattens the likelihood surface)
+- Extended MLE candidate range to [0.005, 0.85] with 340 candidates
+- Linear interpolation for MLE now extrapolates beyond KB edges instead of clamping
+- Kept linear interp for MLE only (kernel smoothing flattens the likelihood surface)
 - Switched to full-grid query strategy: 9 systematic 15x15 viewports per seed, 100% coverage
 - Added exponential-backoff retry on all API calls
+
+### V5 experiment (abandoned)
+
+Tried using settlement health stats (food, population, defense) from observations to create
+soft labels for Bayesian updates. Also tested KB confidence weighting, death signal boosting,
+and port transition modeling. Swept 13 configurations across 10 rounds with observations.
+The best config (higher concentration [8,50]) gained +0.03 avg, which is noise. V4's
+Bayesian concentration at [6,40] is already near optimal. The bottleneck is KB distribution
+quality, not the update mechanics.
 
 ---
 
 ## Challenge Rules
 
-- **Grid**: 40×40. 8 terrain codes → **6 prediction classes** (Empty, Settlement, Port, Ruin, Forest, Mountain)
+- **Grid**: 40x40. 8 terrain codes, 6 prediction classes (Empty, Settlement, Port, Ruin, Forest, Mountain)
 - **Seeds**: 5 per round. Same map + hidden params, different stochastic outcomes.
-- **Queries**: 50 per round (shared across seeds). Each runs one 50-year sim, returns max 15×15 viewport.
-- **Prediction**: W×H×6 probability tensor per seed. Must sum to 1.0 per cell, all values ≥ 0.01.
-- **Scoring**: `score = 100 × exp(−3 × weighted_kl)`. Only dynamic cells contribute (weighted by entropy).
-- **Leaderboard**: `max(round_score × round_weight)` — only your best single weighted round matters.
-- **Round weights** increase ~5% per round (R1=1.05, R15=2.08, R16=2.18).
+- **Queries**: 50 per round (shared across seeds). Each runs one 50-year sim, returns max 15x15 viewport.
+- **Prediction**: WxHx6 probability tensor per seed. Must sum to 1.0 per cell, all values >= 0.01.
+- **Scoring**: `score = 100 * exp(-3 * weighted_kl)`. Only dynamic cells contribute (weighted by entropy).
+- **Leaderboard**: `max(round_score * round_weight)` -- only your best single weighted round matters.
+- **Round weights** increase ~5% per round (R1=1.05, R19=2.53, R22=2.93).
 
 ---
 
@@ -238,6 +280,9 @@ AstarIsland/
 6. Full grid coverage beats repeatedly querying the same settlements.
 7. KL divergence explodes at p=0. Always floor at 0.01 and renormalize.
 8. Ground truth is the average of hundreds of Monte Carlo runs. A single observation is one run. Use observations to estimate hidden parameters, not to set individual cell distributions.
+9. Linear interpolation that clamps at KB edges is a silent killer. If the true parameter is beyond your training range, the MLE will just pick the edge value and you will not know it is wrong. Extrapolate instead.
+10. More training rounds matter more than fancier update mechanics. V5 tried settlement health scoring, KB confidence weighting, death boosting, and port transition modeling. None of them moved the needle. The KB prior is already well calibrated; the limit is how many distinct (survival, expansion) regimes we have seen.
+11. The leaderboard score is max(round_score x weight). A single great round on a late (high weight) round matters more than being consistently decent. Missing one bad round does not hurt you, but nailing one good round on R19+ can jump you 40 spots.
 
 ---
 
@@ -246,7 +291,7 @@ AstarIsland/
 ```bash
 pip install requests numpy
 
-# Set JWT token in config.py (from app.ainm.no cookies → "access_token")
+# Set JWT token in config.py (from app.ainm.no cookies, "access_token")
 
 # Full round cycle:
 python learn.py                # download GT from newly completed rounds

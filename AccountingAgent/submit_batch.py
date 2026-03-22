@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 import time
 
 ENDPOINT = 'https://accounting-agent-t2rr5sny2q-ew.a.run.app/solve'
-N = 2
+N = 3
 
 def main():
     with sync_playwright() as p:
@@ -31,23 +31,7 @@ def main():
             print(f'Submitted {i+1}/{N}', flush=True)
             time.sleep(3)
         
-        print(f'All {N} submitted! Waiting 3 minutes for results...', flush=True)
-        time.sleep(180)
-        
-        # Check scores
-        page.goto('https://app.ainm.no/submit/tripletex', wait_until='networkidle')
-        time.sleep(3)
-        
-        body = page.locator('body').inner_text()
-        for line in body.split('\n'):
-            line = line.strip()
-            if any(x in line for x in ['Total Score', 'Rank', 'Tasks Attempted', 'Submissions']):
-                print(line, flush=True)
-        
-        items = page.locator('text=/Task \\(/').all()
-        for i, item in enumerate(items[:8]):
-            txt = item.inner_text()
-            print(f'{i+1}. {txt}', flush=True)
+        print(f'All {N} submitted!', flush=True)
 
 if __name__ == '__main__':
     main()

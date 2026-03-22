@@ -6,19 +6,19 @@ AI agent for the AINM Tripletex accounting competition. Receives multilingual ac
 
 | Metric | Value |
 |--------|-------|
-| **Total Score** | 66.6 |
+| **Total Score** | 71.4 |
 | **Rank** | #32 |
 | **Tasks Attempted** | 30/30 |
 | **Submissions** | ~290 |
-| **Model** | `gemini-3.1-pro-preview` |
-| **Deployed Rev** | rev48 (accounting-agent-00048) |
+| **Model** | `gemini-3.1-pro-preview` (AI Studio) |
+| **Deployed Rev** | rev58 (accounting-agent-00058) |
 | **Cloud Run Region** | europe-west1 |
 
 ### Score Progression
 - **v1 (rev33)**: ~45 → baseline with gemini-2.5-pro
 - **v2 (rev38-40)**: 62.4 → model swap to gemini-3.1-pro-preview + many prompt/handler fixes
 - **v3 (rev41-43)**: 62.4 → salary division fix, voucher balance check, bank reconciliation fix
-- **v4 (rev46-48)**: 66.6 → date filter fix, empty response handling, rate limit retry, field fixes
+- **v4 (rev46-48)**: 71.4 → date filter fix, empty response handling, rate limit retry, field fixes
 
 ### Task Performance
 - **Perfect (100%)**: departments, simple suppliers/customers, invoices, orders, products — consistently 7/7 or 8/8
@@ -39,12 +39,29 @@ POST /solve
 - **main.py**: FastAPI app, extracts task prompt + attachments (PDF/CSV), pre-fetches common entities (accounts, employees, customers, suppliers, VAT types)
 - **tripletex_client.py**: HTTP client for Tripletex v2 API with session token management
 
+## Model Configuration (AI Studio vs Vertex AI)
+
+This project now prefers **Google AI Studio API key** access instead of Vertex AI so we can use newer models (for better scores and stability).
+
+- **Primary path**: `GEMINI_API_KEY` (AI Studio) with `gemini-3.1-pro-preview`
+- **Fallback**: Vertex AI (if `GEMINI_API_KEY` is missing)
+
+To switch to AI Studio:
+
+1. Add your key to `.env`:
+
+```
+GEMINI_API_KEY=your-ai-studio-key
+```
+
+2. Deploy with the env var set (see Cloud Run section below).
+
 ## Setup
 
 ```bash
 # 1. Create .env from example
 cp .env.example .env
-# Edit .env and add your GEMINI_API_KEY
+# Edit .env and add your GEMINI_API_KEY (AI Studio)
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -64,7 +81,7 @@ gcloud run deploy accounting-agent \
   --timeout=540 \
   --memory=1Gi --cpu=1 \
   --max-instances=3 --concurrency=1 \
-  --set-env-vars="GEMINI_API_KEY=<your-key>"
+  --set-env-vars="GEMINI_API_KEY=<your-ai-studio-key>"
 ```
 
 ## Key Files

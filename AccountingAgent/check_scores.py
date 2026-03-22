@@ -190,11 +190,11 @@ def print_scores(results, summary=None):
         # Color coding via markers
         marker = " "
         if pct == 100:
-            marker = "✓"
+            marker = "OK"
         elif pct == 0:
-            marker = "✗"
+            marker = "XX"
         elif pct and pct < 50:
-            marker = "!"
+            marker = "!!"
         
         print(f"{i+1:>3} {tm:<10} {score_str:<12} {pct_str:>5} {dur_str:>10} {marker} {status}")
     

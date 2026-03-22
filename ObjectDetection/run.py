@@ -310,6 +310,10 @@ def main() -> None:
     yolo_input_name = sessions[0][1]
     model_imgsz     = sessions[0][2]
 
+    # Use full TTA for all modes: 3 scales × 2 flips per model
+    tta_scales = TTA_SCALES
+    print(f"TTA scales: {tta_scales} ({len(sessions)} model(s))")
+
     # Classifier disabled: YOLO was trained with the correct 356 category_ids (0-355)
     # as class labels, so yolo_cls IS the category_id. A pretrained (non-fine-tuned)
     # EfficientNet using cosine similarity on generic ImageNet features cannot reliably
@@ -333,7 +337,7 @@ def main() -> None:
         all_dets = []
 
         for (sess, inp_name, sess_imgsz) in sessions:
-            for tta_scale in TTA_SCALES:
+            for tta_scale in tta_scales:
                 for tta_flip in TTA_FLIPS:
                     tta_size = max(32, int(sess_imgsz * tta_scale) // 32 * 32)
                     inp = img_np[:, ::-1, :].copy() if tta_flip else img_np
