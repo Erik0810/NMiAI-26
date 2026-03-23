@@ -8,7 +8,7 @@
 
 Four days of live-scored AI engineering across computer vision, autonomous agents, and probabilistic simulation modelling.
 
-**Finished at 56th. Peak placement: 13th (Day 2).**
+**Finished: 56th. Peak placement: 13th (Day 2). There were 3100 registered competitors in total**
 
 Takeaways:
 
