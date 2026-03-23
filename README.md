@@ -8,7 +8,7 @@
 
 Four days of live-scored AI engineering across computer vision, autonomous agents, and probabilistic simulation modelling.
 
-**Peak placement: 13th (Day 2).** Spent most of the competition around 20-30th before finishing at **XX**.
+**Finished at 56th. Peak placement: 13th (Day 2).**
 
 Takeaways:
 
